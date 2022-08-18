@@ -110,6 +110,7 @@ def post_rate(current_user, post_id, post_rate):
     db.session.commit()
     ##############need to add block where to check if like exist and update if exist!!!!
 
+
     return make_response('Successfully posted.', 201)
 
 # route for logging user in
