@@ -1,8 +1,6 @@
-import pdb
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
-
 
 # decorator for verifying the JWT
 import jwt
@@ -18,113 +16,79 @@ def token_required(f):
     def decorated(*args, **kwargs):
         token = None
         # jwt is passed in the request header
-        if 'X-Access-Token' in request.headers:
-            token = request.headers['X-Access-Token']
-        # return 401 if token is not passed
+        if 'Access-Token' in request.headers:
+            token = request.headers['Access-Token']
         if not token:
             return jsonify({'message': 'Token is missing !!'}), 401
 
         try:
             # decoding the payload to fetch the stored details
-            print('try decode')
             data = jwt.decode(jwt=token, key=app.config['SECRET_KEY'], algorithms=['HS256'])
-            print(data)
             current_user = User.query \
                 .filter_by(public_id=data['public_id']) \
                 .first()
-        except Exception as e:
-            print(e)
+            current_user.last_req = datetime.now()
+            db.session.commit()
+        except Exception:
             return jsonify({
                 'message': 'Token is invalid !!'
             }), 401
-        # returns the current logged in users contex to the routes
         return f(current_user, *args, **kwargs)
 
     return decorated
-
-
-# User Database Route
-# this route sends back list of users
-@app.route('/user', methods=['GET'])
-@token_required
-def get_all_users(current_user):
-    # querying the database
-    # for all the entries in it
-    users = User.query.all()
-    # converting the query objects
-    # to list of jsons
-    output = []
-    for user in users:
-        # appending the user data json
-        # to the response list
-        output.append({
-            'public_id': user.public_id,
-            'name': user.name,
-            'email': user.email
-        })
-
-    return jsonify({'users': output})
-
 
 
 # create post
 @app.route('/create_post', methods=['POST'])
 @token_required
 def create_post(current_user):
-    # creates dictionary of form data
     post = request.json
     if not post or not post.get('text'):
         # returns 401 if any email or / and password is missing
-        return make_response(
-            'Write some post..',
-            401,
-            {'WWW-Authenticate': 'Basic realm ="Text require"'}
-        )
+        return jsonify({'Message': 'Text require'}), 401
 
-    title = post.get('title')
-    text = post.get('text')
-    author_id = current_user.id
-    # database ORM object
+    title, text, author_id = post.get('title'), post.get('text'), current_user.id
     post = Post(
         title=title,
         text=text,
         author_id=author_id,
     )
-    # insert user
     db.session.add(post)
     db.session.commit()
 
-    return make_response('Successfully posted.', 201)
+    return jsonify({'Message': 'Successfully posted'}), 201
 
 
-@app.route('/post_rate/<post_id>/<post_rate>')
+@app.route('/post_rate/id=<post_id>/rate=<post_rate>')
 @token_required
 def post_rate(current_user, post_id, post_rate):
-    like = Like(
-        post_id=post_id,
-        user_id=current_user.id,
-        rate=post_rate,
-    )
-    # insert user
-    db.session.add(like)
-    db.session.commit()
-    ##############need to add block where to check if like exist and update if exist!!!!
+    if not post_rate.isdigit() or not post_id.isdigit():
+        return jsonify({'Message': 'Please rate post 1(Like) or 0(Dislike), or enter valid post id'}), 400
+    post_rate = bool(int(post_rate))
+    rate = Like.query \
+        .filter_by(post_id=post_id, user_id=current_user.id) \
+        .first()
+    if not rate:
+        like = Like(
+            post_id=post_id,
+            user_id=current_user.id,
+            rate=post_rate,
+        )
+        db.session.add(like)
+        db.session.commit()
+        return jsonify({'Message': 'Successfully rated.'}), 201
+    if post_rate != rate.rate:
+        rate.rate = post_rate
+        db.session.commit()
+    return jsonify({'Message': 'Successfully rated.'}), 201
 
-
-    return make_response('Successfully posted.', 201)
 
 # route for logging user in
 @app.route('/login', methods=['POST'])
 def login():
-    # creates dictionary of form data
     auth = request.json
     if not auth or not auth.get('email') or not auth.get('password'):
-        # returns 401 if any email or / and password is missing
-        return make_response(
-            'Could not verify',
-            401,
-            {'WWW-Authenticate': 'Basic realm ="Login required !!"'}
-        )
+        return jsonify({'Message': 'Could not verify'}), 401
 
     user = User.query \
         .filter_by(email=auth.get('email')) \
@@ -132,11 +96,7 @@ def login():
 
     if not user:
         # returns 401 if user does not exist
-        return make_response(
-            'Could not verify',
-            401,
-            {'WWW-Authenticate': 'Basic realm ="User does not exist !!"'}
-        )
+        return jsonify({'Message': 'User does not exist !!!'}), 401
 
     if check_password_hash(user.password, auth.get('password')):
         # generates the JWT Token
@@ -144,30 +104,18 @@ def login():
             'public_id': user.public_id,
             'exp': datetime.utcnow() + timedelta(minutes=30)
         }, app.config['SECRET_KEY'])
-        return make_response(jsonify({'token': token}), 201)
+        user.last_login = datetime.now()
+        db.session.commit()
+        return jsonify({'Access-Token': token}), 201
     # returns 403 if password is wrong
-    return make_response(
-        'Could not verify',
-        403,
-        {'WWW-Authenticate': 'Basic realm ="Wrong Password !!"'}
-    )
+    return jsonify({'Message': 'Wrong Password !!'}), 403
 
 
-# signup route
 @app.route('/signup', methods=['POST'])
 def signup():
-    # creates a dictionary of the form data
     data = request.json
-
-    # gets name, email and password
     name, email = data.get('name'), data.get('email')
     password = data.get('password')
-    print(f'PASSWORD {password}')
-    print(f'PASSWORD {name}')
-    print(data)
-
-
-    # checking for existing user
     user = User.query \
         .filter_by(email=email) \
         .first()
@@ -182,8 +130,37 @@ def signup():
         # insert user
         db.session.add(user)
         db.session.commit()
-
-        return make_response('Successfully registered.', 201)
+        return jsonify({'Message': 'Successfully registered.'}), 201
     else:
         # returns 202 if user already exists
-        return make_response('User already exists. Please Log in.', 202)
+        return jsonify({'Message': 'User already exists. Please Log in.'}), 202
+
+
+# need to encode symbols for curl request
+# urllib.parse.quote('/api/analistics/?date_from=2022-08-10&date_to=2022-08-30')
+@app.route('/api/analistics/?date_from=<date_from>&date_to=<date_to>/')
+def get_analystic(date_from, date_to):
+    try:
+        date_from = datetime.strptime(date_from, '%Y-%m-%d')
+        date_to = datetime.strptime(date_to, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'message': 'Please enter valid date %Y-%m-%d'}), 400
+    analystic = Like.query \
+        .filter(date_from < Like.date) \
+        .filter(date_to > Like.date)
+
+    result = {}
+    for i in analystic:
+        if i.date.strftime('%Y-%m-%d') not in result:
+            result[i.date.strftime('%Y-%m-%d')] = [f"{i}"]
+        else:
+            result[i.date.strftime('%Y-%m-%d')].append(f"{i}")
+    return jsonify(result), 201
+
+
+@app.route('/user_activity')
+@token_required
+def get_data(current_user):
+    last_login = current_user.last_login
+    last_req = current_user.last_req
+    return jsonify({'Last request': last_req, 'Last login': last_login})
